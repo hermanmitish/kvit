@@ -1,154 +1,158 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WebServer.h>
-#include <EEPROM.h>
-#include "esp_camera.h"  // Camera functions
+#include <HTTPClient.h>
+#include <ArduinoJson.h>
 
-// Wi-Fi Credentials (CHANGE THESE)
-const char* ssid = "rUSSIA_IS_A_TERRORIST_STATE";
-const char* password = "9rfq53eutx4cyi86zvki";
-
-// Moisture Sensor & Pump Pins
 #define SENSOR_PUMP_1 12
 #define SENSOR_PUMP_2 13
 #define SENSOR_PUMP_3 15
 #define SENSOR_PUMP_4 14
 
-#define RELAY_ACTIVE_LOW true  // Set to false if relay is active-high
-#define EEPROM_SIZE 32  // Storage for settings
+const char* ssid = "rUSSIA_IS_A_TERRORIST_STATE";
+const char* password = "9rfq53eutx4cyi86zvki";
+const char* serverUrl = "http://192.168.1.65:3000/api/post";
 
-// Web Server
-WebServer server(80);
+// Global struct for pump settings
+struct PumpSettings {
+    int min_humidity;
+    int min_interval;
+    bool water_now;
+    int min_sensor_reading;
+    int max_sensor_reading;
+} pumps[4];
 
-// Struct for plant settings
-struct PlantSettings {
-    int minHumidity;
-    int minInterval;
-    int duration;
-} plants[4];
-
-// Sensor Readings
-int moistureLevels[4] = {0, 0, 0, 0};
-int minSensor[4] = {1000, 800, 800, 1000};  // Min raw ADC value per sensor
-int maxSensor[4] = {3000, 1100, 1100, 3000};  // Max raw ADC value per sensor
-
-// Function to map raw ADC value to %
-int mapToPercent(int raw, int minVal, int maxVal) {
-    return constrain(map(raw, minVal, maxVal, 0, 100), 0, 100);
-}
-
-// EEPROM Save & Load
-void saveSettings() {
-    for (int i = 0; i < 4; i++) {
-        EEPROM.write(i * 3, plants[i].minHumidity);
-        EEPROM.write(i * 3 + 1, plants[i].minInterval);
-        EEPROM.write(i * 3 + 2, plants[i].duration);
+// Function to get ESP32 serial number
+String getDeviceSerial() {
+    uint32_t chipId = 0;
+    for (int i = 0; i < 17; i += 8) {
+        chipId |= ((ESP.getEfuseMac() >> (40 - i)) & 0xFF) << i;
     }
-    EEPROM.commit();
+    return "esp32-" + String(chipId, HEX);
 }
 
-void loadSettings() {
-    for (int i = 0; i < 4; i++) {
-        plants[i].minHumidity = EEPROM.read(i * 3);
-        plants[i].minInterval = EEPROM.read(i * 3 + 1);
-        plants[i].duration = EEPROM.read(i * 3 + 2);
-    }
+void disableWiFiAndRestoreADC() {
+    Serial.println("🔌 Fully disabling Wi-Fi...");
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    delay(100); // Short delay to allow shutdown
+
+    Serial.println("♻️ Re-enabling ADC2...");
+    adcAttachPin(SENSOR_PUMP_1);
+    adcAttachPin(SENSOR_PUMP_2);
+    adcAttachPin(SENSOR_PUMP_3);
+    adcAttachPin(SENSOR_PUMP_4);
 }
 
-// Pump Activation Function
-void activatePump(int pumpPin, int plantIndex) {
-    Serial.print("Watering Plant "); Serial.println(plantIndex + 1);
-    pinMode(pumpPin, OUTPUT);
-    digitalWrite(pumpPin, RELAY_ACTIVE_LOW ? LOW : HIGH);
-    delay(plants[plantIndex].duration * 1000);
-    digitalWrite(pumpPin, RELAY_ACTIVE_LOW ? HIGH : LOW);
-    pinMode(pumpPin, INPUT);
-}
-
-// Handle Web Page Request
-void handleRoot() {
-    String html = "<html><head><style>";
-    html += "body { font-family: Arial; text-align: center; }";
-    html += "table { width: 80%; margin: auto; border-collapse: collapse; }";
-    html += "td, th { border: 1px solid black; padding: 10px; text-align: center; }";
-    html += "</style></head><body>";
-    
-    html += "<h1>ESP32-CAM Plant Monitor</h1>";
-    html += "<img src='/snapshot' width='320'><br>";
-    html += "<table><tr><th>Plant</th><th>Soil Humidity</th><th>Min %</th><th>Interval (s)</th><th>Duration (s)</th></tr>";
-
-    for (int i = 0; i < 4; i++) {
-        html += "<tr><td>Plant " + String(i + 1) + "</td>";
-        html += "<td>" + String(mapToPercent(moistureLevels[i], minSensor[i], maxSensor[i])) + "%</td>";
-        html += "<td><input type='number' name='minH" + String(i) + "' value='" + String(plants[i].minHumidity) + "'></td>";
-        html += "<td><input type='number' name='interval" + String(i) + "' value='" + String(plants[i].minInterval) + "'></td>";
-        html += "<td><input type='number' name='duration" + String(i) + "' value='" + String(plants[i].duration) + "'></td>";
-        html += "</tr>";
-    }
-
-    html += "</table><br><input type='submit' value='Save'></form></body></html>";
-    
-    server.send(200, "text/html", html);
-}
-
-// Handle Settings Update
-void handleSave() {
-    for (int i = 0; i < 4; i++) {
-        plants[i].minHumidity = server.arg("minH" + String(i)).toInt();
-        plants[i].minInterval = server.arg("interval" + String(i)).toInt();
-        plants[i].duration = server.arg("duration" + String(i)).toInt();
-    }
-    saveSettings();
-    server.send(200, "text/plain", "Settings saved. <a href='/'>Go back</a>");
-}
-
-// Handle Camera Snapshot
-void handleSnapshot() {
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (!fb) {
-        server.send(500, "text/plain", "Camera capture failed");
-        return;
-    }
-    server.send(200, "image/jpeg", (const char *)fb->buf);
-    esp_camera_fb_return(fb);
-}
-
-// Setup Function
 void setup() {
     Serial.begin(115200);
-    EEPROM.begin(EEPROM_SIZE);
-    loadSettings();
+    Serial.println("🚀 ESP32 Moisture Monitoring System Starting...");
 
+    // Set default pump settings
+    for (int i = 0; i < 4; i++) {
+        pumps[i].min_humidity = 0;
+        pumps[i].min_interval = 10000;
+        pumps[i].water_now = false;
+        pumps[i].min_sensor_reading = 0;
+        pumps[i].max_sensor_reading = 4095;
+    }
+
+    disableWiFiAndRestoreADC();
+}
+
+void loop() {
+    Serial.println("🔍 Reading moisture sensors...");
+
+    // Read sensors
+    int moisture[4];
+    pinMode(SENSOR_PUMP_1, INPUT);
+    moisture[0] = analogRead(SENSOR_PUMP_1);
+    pinMode(SENSOR_PUMP_2, INPUT);
+    moisture[1] = analogRead(SENSOR_PUMP_2);
+    pinMode(SENSOR_PUMP_3, INPUT);
+    moisture[2] = analogRead(SENSOR_PUMP_3);
+    pinMode(SENSOR_PUMP_4, INPUT);
+    moisture[3] = analogRead(SENSOR_PUMP_4);
+
+    Serial.println("🌱 Moisture Readings:");
+    Serial.printf(" - Pump 1: %d\n", moisture[0]);
+    Serial.printf(" - Pump 2: %d\n", moisture[1]);
+    Serial.printf(" - Pump 3: %d\n", moisture[2]);
+    Serial.printf(" - Pump 4: %d\n", moisture[3]);
+
+    Serial.println("📡 Connecting to Wi-Fi...");
     WiFi.begin(ssid, password);
+    int attempts = 0;
+
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
         Serial.print(".");
-    }
-    Serial.println("\nWiFi Connected!");
-
-    server.on("/", handleRoot);
-    server.on("/save", handleSave);
-    server.on("/snapshot", handleSnapshot);
-    server.begin();
-}
-
-// Main Loop
-void loop() {
-    server.handleClient();
-    
-    // Read Sensors
-    for (int i = 0; i < 4; i++) {
-        pinMode(SENSOR_PUMP_1 + i, INPUT);
-        moistureLevels[i] = analogRead(SENSOR_PUMP_1 + i);
-    }
-
-    // Check & Water Plants
-    for (int i = 0; i < 4; i++) {
-        int humidity = mapToPercent(moistureLevels[i], minSensor[i], maxSensor[i]);
-        if (humidity < plants[i].minHumidity) {
-            activatePump(SENSOR_PUMP_1 + i, i);
+        attempts++;
+        if (attempts > 20) {  // Timeout
+            Serial.println("\n❌ Wi-Fi Connection Failed!");
+            return;
         }
     }
 
-    delay(5000);
+    Serial.println("\n✅ Wi-Fi Connected!");
+
+    // Prepare JSON data
+    StaticJsonDocument<512> jsonDoc;
+    jsonDoc["serial"] = getDeviceSerial();
+    
+    JsonArray pumpsArray = jsonDoc.createNestedArray("pumps");
+    for (int i = 0; i < 4; i++) {
+        JsonObject pump = pumpsArray.createNestedObject();
+        pump["index"] = i;
+        
+        JsonObject sensorReading = pump.createNestedObject("currentSensorReading");
+        sensorReading["timestamp"] = String(millis()); // Fake timestamp, use actual if needed
+        sensorReading["moisture"] = moisture[i];
+    }
+
+    String jsonData;
+    serializeJson(jsonDoc, jsonData);
+
+    Serial.println("📤 Sending data to server...");
+    
+    // Send data to the server
+    HTTPClient http;
+    http.begin(serverUrl);
+    http.addHeader("Content-Type", "application/json");
+
+    int httpResponseCode = http.POST(jsonData);
+    
+    if (httpResponseCode > 0) {
+        Serial.printf("✅ Server Response Code: %d\n", httpResponseCode);
+        String response = http.getString();
+        Serial.println("🔄 Received Response:");
+        Serial.println(response);
+
+        // Parse JSON response
+        StaticJsonDocument<512> responseJson;
+        DeserializationError error = deserializeJson(responseJson, response);
+        if (!error) {
+            JsonArray receivedPumps = responseJson["pumps"].as<JsonArray>();
+            for (int i = 0; i < receivedPumps.size(); i++) {
+                pumps[i].min_humidity = receivedPumps[i]["min_humidity"];
+                pumps[i].min_interval = receivedPumps[i]["min_interval"];
+                pumps[i].water_now = receivedPumps[i]["water_now"];
+                pumps[i].min_sensor_reading = receivedPumps[i]["min_sensor_reading"];
+                pumps[i].max_sensor_reading = receivedPumps[i]["max_sensor_reading"];
+            }
+            Serial.println("✅ Pump settings updated successfully!");
+        } else {
+            Serial.println("❌ Failed to parse server response.");
+        }
+    } else {
+        Serial.printf("❌ HTTP Request Failed: %s\n", http.errorToString(httpResponseCode).c_str());
+    }
+
+    http.end();
+    
+    // Fully disable Wi-Fi and restore ADC functionality
+    disableWiFiAndRestoreADC();
+    
+    // Delay before next loop
+    Serial.println("⏳ Waiting before next cycle...");
+    delay(10000);
 }
