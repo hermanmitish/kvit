@@ -72,7 +72,7 @@ void setupCamera() {
     config.pin_reset = RESET_GPIO_NUM;
     config.xclk_freq_hz = 20000000;
     config.pixel_format = PIXFORMAT_JPEG;
-    config.frame_size = FRAMESIZE_QVGA;  // Start with QVGA for stability
+    config.frame_size = FRAMESIZE_UXGA;  // Start with QVGA for stability
     config.jpeg_quality = 10;
     config.fb_count = 2;
 
@@ -121,7 +121,7 @@ void setup() {
     disableWiFiAndRestoreADC();
 }
 
-void captureAndUpload(String jsonData) {
+void uploadImage(String timestamp) {
     Serial.println("📸 Capturing image...");
     camera_fb_t* fb = esp_camera_fb_get();
     if (!fb) {
@@ -129,33 +129,36 @@ void captureAndUpload(String jsonData) {
         return;
     }
 
-    Serial.println("📤 Sending image and sensor data...");
-    
+    Serial.printf("📤 Uploading image (%d bytes)...\n", fb->len);
+
     HTTPClient http;
-    http.begin(serverUrl);
-    http.addHeader("Content-Type", "multipart/form-data; boundary=ESP32BOUNDARY");
-
-    // Create multipart form data
-    String boundary = "ESP32BOUNDARY";
-    String formData = "--" + boundary + "\r\n";
-    formData += "Content-Disposition: form-data; name=\"json\"\r\n\r\n";
-    formData += jsonData + "\r\n";
-
-    formData += "--" + boundary + "\r\n";
-    formData += "Content-Disposition: form-data; name=\"image\"; filename=\"snapshot.jpg\"\r\n";
-    formData += "Content-Type: image/jpeg\r\n\r\n";
-
-    // Send multipart data
     WiFiClient client;
-    http.begin(client, serverUrl);
-    int contentLength = formData.length() + fb->len + boundary.length() + 6;
-    
-    http.addHeader("Content-Length", String(contentLength));
-    int httpResponseCode = http.POST(formData);
-    client.write(fb->buf, fb->len);
-    client.print("\r\n--" + boundary + "--\r\n");
+    String path = String(serverUrl) + "/api/upload/" + getDeviceSerial() + "/" + timestamp;
+    http.begin(client, path); // Adjust endpoint as needed
+
+    http.addHeader("Content-Type", "image/jpeg");
+
+    int httpResponseCode = http.PUT(fb->buf, fb->len);
+    if (httpResponseCode > 0) {
+        Serial.printf("✅ Image Sent! Server Response: %d\n", httpResponseCode);
+    } else {
+        Serial.printf("❌ Image Upload Failed: %s\n", http.errorToString(httpResponseCode).c_str());
+    }
 
     esp_camera_fb_return(fb);
+    http.end();
+}
+
+void uploadSensorData(String jsonData){
+    Serial.println("📤 Sending data to server...");
+    
+    // Send data to the server
+    HTTPClient http;
+    String path = String(serverUrl) + "/api/post";
+    http.begin(path);
+    http.addHeader("Content-Type", "application/json");
+
+    int httpResponseCode = http.POST(jsonData);
     
     if (httpResponseCode > 0) {
         Serial.printf("✅ Server Response Code: %d\n", httpResponseCode);
@@ -176,13 +179,51 @@ void captureAndUpload(String jsonData) {
                 pumps[i].max_sensor_reading = receivedPumps[i]["max_sensor_reading"];
             }
             Serial.println("✅ Pump settings updated successfully!");
+            // ✅ Correct way to extract "timestamp"
+            if (responseJson.containsKey("timestamp")) {
+                String timestamp = responseJson["timestamp"].as<String>();  // ✅ Extract correctly
+                Serial.print("📅 Received Timestamp: ");
+                Serial.println(timestamp);
+                
+                uploadImage(timestamp);  // ✅ Pass timestamp correctly
+            } else {
+                Serial.println("❌ No 'timestamp' in response JSON.");
+            }
         } else {
             Serial.println("❌ Failed to parse server response.");
         }
     } else {
         Serial.printf("❌ HTTP Request Failed: %s\n", http.errorToString(httpResponseCode).c_str());
     }
-    
+
+    http.end();
+
+}
+
+void uploadImage() {
+    Serial.println("📸 Capturing image...");
+    camera_fb_t* fb = esp_camera_fb_get();
+    if (!fb) {
+        Serial.println("❌ Camera capture failed!");
+        return;
+    }
+
+    Serial.printf("📤 Uploading image (%d bytes)...\n", fb->len);
+
+    HTTPClient http;
+    WiFiClient client;
+    http.begin(client, "http://192.168.1.64:3000/api/upload/snapshot.jpg"); // Adjust endpoint as needed
+
+    http.addHeader("Content-Type", "image/jpeg");
+
+    int httpResponseCode = http.PUT(fb->buf, fb->len);
+    if (httpResponseCode > 0) {
+        Serial.printf("✅ Image Sent! Server Response: %d\n", httpResponseCode);
+    } else {
+        Serial.printf("❌ Image Upload Failed: %s\n", http.errorToString(httpResponseCode).c_str());
+    }
+
+    esp_camera_fb_return(fb);
     http.end();
 }
 
@@ -236,11 +277,8 @@ void loop() {
     }
 
     String jsonData;
-    serializeJson(jsonDoc, jsonData);
-
-    Serial.println("📤 Sending data to server...");
-    
-    captureAndUpload(jsonData);
+    serializeJson(jsonDoc, jsonData);    
+    uploadSensorData(jsonData);
     
     // Fully disable Wi-Fi and restore ADC functionality
     disableWiFiAndRestoreADC();
