@@ -72,7 +72,7 @@ void setupCamera() {
     config.pin_reset = RESET_GPIO_NUM;
     config.xclk_freq_hz = 20000000;
     config.pixel_format = PIXFORMAT_JPEG;
-    config.frame_size = FRAMESIZE_UXGA;  // Start with QVGA for stability
+    config.frame_size = FRAMESIZE_VGA;  // Start with QVGA for stability VGA, SVGA, XGA, SXGA, UXGA
     config.jpeg_quality = 10;
     config.fb_count = 2;
 
