@@ -2,16 +2,16 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include "secrets.h"
 
 #define SENSOR_PUMP_1 12
 #define SENSOR_PUMP_2 13
 #define SENSOR_PUMP_3 15
 #define SENSOR_PUMP_4 14
 
-const char* ssid = "rUSSIA_IS_A_TERRORIST_STATE";
-const char* password = "9rfq53eutx4cyi86zvki";
-const char* serverUrl = "http://192.168.1.65:3000/api/post";
-
+const char* ssid = WIFI_SSID;
+const char* password = WIFI_PASSWORD;
+const char* serverUrl = SERVER_URL;
 // Global struct for pump settings
 struct PumpSettings {
     int min_humidity;
