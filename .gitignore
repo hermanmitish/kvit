@@ -5,3 +5,5 @@
 .vscode/ipch
 include/secrets.h
 .fake
+.conda
+.esphome

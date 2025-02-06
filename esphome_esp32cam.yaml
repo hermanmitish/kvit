@@ -1,0 +1,66 @@
+esphome:
+  name: esp32cam-home-1
+
+esp32:
+  board: esp32cam
+  framework:
+    type: arduino
+
+# Example configuration entry
+esp32_camera_web_server:
+  - port: 8080
+    mode: stream
+  - port: 8081
+    mode: snapshot
+
+esp32_camera:
+  name: ESP32-CAM
+  external_clock:
+    pin: GPIO0
+    frequency: 20MHz
+  i2c_pins:
+    sda: GPIO26
+    scl: GPIO27
+  data_pins: [GPIO5, GPIO18, GPIO19, GPIO21, GPIO36, GPIO39, GPIO34, GPIO35]
+  vsync_pin: GPIO25
+  href_pin: GPIO23
+  pixel_clock_pin: GPIO22
+  power_down_pin: GPIO32
+  resolution: 1600x1200
+  max_framerate: 5fps
+  idle_framerate: 0.1fps
+  frame_buffer_count: 2
+  jpeg_quality: 10  # From 10 (best) to 63 (worst).
+  # special_effect: GRAYSCALE
+
+text_sensor:
+  - platform: wifi_info
+    ip_address:
+      name: ESP32-CAM IP
+    ssid:
+      name: ESP32-CAM SSID
+    bssid:
+      name: ESP32-CAM BSSID
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  password: "opt"
+
+ota:
+  - platform: esphome
+    password: "opt"
+
+wifi:
+  ssid: ""
+  password: ""
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Esp32Cam Fallback Hotspot"
+    password: ""
+
+
+captive_portal:
+    
