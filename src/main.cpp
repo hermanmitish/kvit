@@ -107,12 +107,12 @@ void disableWiFiAndRestoreADC() {
 
 void setup() {
     Serial.begin(115200);
-    Serial.println("🚀 ESP32 Moisture Monitoring System Starting...");
+    Serial.println("🚀 ESP32 Humidity Monitoring System Starting...");
     setupCamera(); // Initialize camera
     // Set default pump settings
     for (int i = 0; i < 4; i++) {
         pumps[i].min_humidity = 0;
-        pumps[i].min_interval = 10000;
+        pumps[i].min_interval = 60*60*24;
         pumps[i].water_now = false;
         pumps[i].min_sensor_reading = 0;
         pumps[i].max_sensor_reading = 4095;
@@ -132,8 +132,9 @@ void uploadImage(String timestamp) {
     Serial.printf("📤 Uploading image (%d bytes)...\n", fb->len);
 
     HTTPClient http;
+    http.setTimeout(20000);  // ✅ Increase timeout to 20 seconds (20000ms)
     WiFiClient client;
-    String path = String(serverUrl) + "/api/upload/" + getDeviceSerial() + "/" + timestamp;
+    String path = String(serverUrl) + "/api/upload?serial=" + getDeviceSerial() + "&timestamp=" + timestamp;
     http.begin(client, path); // Adjust endpoint as needed
 
     http.addHeader("Content-Type", "image/jpeg");
@@ -154,6 +155,7 @@ void uploadSensorData(String jsonData){
     
     // Send data to the server
     HTTPClient http;
+    http.setTimeout(20000);  // ✅ Increase timeout to 20 seconds (20000ms)
     String path = String(serverUrl) + "/api/post";
     http.begin(path);
     http.addHeader("Content-Type", "application/json");
@@ -200,52 +202,25 @@ void uploadSensorData(String jsonData){
 
 }
 
-void uploadImage() {
-    Serial.println("📸 Capturing image...");
-    camera_fb_t* fb = esp_camera_fb_get();
-    if (!fb) {
-        Serial.println("❌ Camera capture failed!");
-        return;
-    }
-
-    Serial.printf("📤 Uploading image (%d bytes)...\n", fb->len);
-
-    HTTPClient http;
-    WiFiClient client;
-    http.begin(client, "http://192.168.1.64:3000/api/upload/snapshot.jpg"); // Adjust endpoint as needed
-
-    http.addHeader("Content-Type", "image/jpeg");
-
-    int httpResponseCode = http.PUT(fb->buf, fb->len);
-    if (httpResponseCode > 0) {
-        Serial.printf("✅ Image Sent! Server Response: %d\n", httpResponseCode);
-    } else {
-        Serial.printf("❌ Image Upload Failed: %s\n", http.errorToString(httpResponseCode).c_str());
-    }
-
-    esp_camera_fb_return(fb);
-    http.end();
-}
-
 void loop() {
-    Serial.println("🔍 Reading moisture sensors...");
+    Serial.println("🔍 Reading humidity sensors...");
 
     // Read sensors
-    int moisture[4];
+    int humidity[4];
     pinMode(SENSOR_PUMP_1, INPUT);
-    moisture[0] = analogRead(SENSOR_PUMP_1);
+    humidity[0] = analogRead(SENSOR_PUMP_1);
     pinMode(SENSOR_PUMP_2, INPUT);
-    moisture[1] = analogRead(SENSOR_PUMP_2);
+    humidity[1] = analogRead(SENSOR_PUMP_2);
     pinMode(SENSOR_PUMP_3, INPUT);
-    moisture[2] = analogRead(SENSOR_PUMP_3);
+    humidity[2] = analogRead(SENSOR_PUMP_3);
     pinMode(SENSOR_PUMP_4, INPUT);
-    moisture[3] = analogRead(SENSOR_PUMP_4);
+    humidity[3] = analogRead(SENSOR_PUMP_4);
 
-    Serial.println("🌱 Moisture Readings:");
-    Serial.printf(" - Pump 1: %d\n", moisture[0]);
-    Serial.printf(" - Pump 2: %d\n", moisture[1]);
-    Serial.printf(" - Pump 3: %d\n", moisture[2]);
-    Serial.printf(" - Pump 4: %d\n", moisture[3]);
+    // Serial.println("🌱 Humidity Readings:");
+    // Serial.printf(" - Pump 1: %d\n", humidity[0]);
+    // Serial.printf(" - Pump 2: %d\n", humidity[1]);
+    // Serial.printf(" - Pump 3: %d\n", humidity[2]);
+    // Serial.printf(" - Pump 4: %d\n", humidity[3]);
 
     Serial.println("📡 Connecting to Wi-Fi...");
     WiFi.begin(ssid, password);
@@ -262,7 +237,7 @@ void loop() {
     }
 
     Serial.println("\n✅ Wi-Fi Connected!");
-
+    Serial.println("🌱 Humidity Level:");
     // Prepare JSON data
     StaticJsonDocument<512> jsonDoc;
     jsonDoc["serial"] = getDeviceSerial();
@@ -271,9 +246,25 @@ void loop() {
     for (int i = 0; i < 4; i++) {
         JsonObject pump = pumpsArray.createNestedObject();
         pump["index"] = i;
+        // // After we manually watered the pump, turn the toggle off
+        // pump["water_now"] = false;
+        // After we manually or automatically watered the pump, set this toggle to true
+        if(pumps[i].water_now){
+            pump["watering"] = true;
+        }else{
+            pump["watering"] = false;
+        }
+        
         
         JsonObject sensorReading = pump.createNestedObject("currentSensorReading");
-        sensorReading["moisture"] = moisture[i];
+        sensorReading["humidityRaw"] = humidity[i];
+        float relativeHumidity = max(0.0f, min(1.0f, 
+            (float)(pumps[i].max_sensor_reading - humidity[i]) / 
+            (float)(pumps[i].max_sensor_reading - pumps[i].min_sensor_reading)
+        ));
+        sensorReading["humidity"] = relativeHumidity;
+        Serial.printf(" - Pump %d: Raw: %d | Min: %d | Max: %d\n",
+            i, humidity[i], pumps[i].min_sensor_reading, pumps[i].max_sensor_reading);
     }
 
     String jsonData;
